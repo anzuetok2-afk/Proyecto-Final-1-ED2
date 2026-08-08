@@ -1,0 +1,49 @@
+#include <Arduino.h>
+
+// Sensor LM35 conectado al ADC del ESP32
+#define LM35_PIN 33
+
+// Boton utilizado para realizar una nueva medicion
+#define BOTON_PIN 26
+
+void setup() {
+  Serial.begin(115200);
+
+  // Se utiliza la resistencia pull-up interna del ESP32
+  // El boton se conecta entre GPIO26 y GND
+  pinMode(BOTON_PIN, INPUT_PULLUP);
+
+  Serial.println("LM35 + BOTON");
+  Serial.println("Presiona el boton para medir");
+}
+
+void loop() {
+  // Con INPUT_PULLUP el boton presionado se detecta como LOW
+  if (digitalRead(BOTON_PIN) == LOW) {
+    delay(20);
+
+    // Primera lectura utilizada para estabilizar el ADC
+    analogReadMilliVolts(LM35_PIN);
+    delay(5);
+
+    // Obtener voltaje del LM35 en milivoltios
+    uint32_t milivoltios = analogReadMilliVolts(LM35_PIN);
+
+    // Conversion a grados Celsius
+    float temperatura = milivoltios / 10.0;
+
+    Serial.print("Voltaje: ");
+    Serial.print(milivoltios);
+    Serial.print(" mV | Temperatura: ");
+    Serial.print(temperatura, 1);
+    Serial.println(" C");
+
+    // Esperar hasta que el usuario suelte el boton
+    // para evitar realizar varias mediciones por una pulsacion
+    while (digitalRead(BOTON_PIN) == LOW) {
+      delay(10);
+    }
+
+    delay(50);
+  }
+}
