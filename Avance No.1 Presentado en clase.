@@ -1,5 +1,4 @@
 #include <Arduino.h>
-
 // Pines utilizados para cada color del LED RGB
 #define LED_ROJO 12
 #define LED_VERDE 14
