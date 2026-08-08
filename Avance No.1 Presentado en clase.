@@ -1,0 +1,33 @@
+#include <Arduino.h>
+
+// Pines utilizados para cada color del LED RGB
+#define LED_ROJO 12
+#define LED_VERDE 14
+#define LED_AZUL 27
+
+void setup() {
+  // Configurar los tres colores como salidas
+  pinMode(LED_ROJO, OUTPUT);
+  pinMode(LED_VERDE, OUTPUT);
+  pinMode(LED_AZUL, OUTPUT);
+}
+
+void loop() {
+  // Encender color rojo
+  digitalWrite(LED_ROJO, HIGH);
+  digitalWrite(LED_VERDE, LOW);
+  digitalWrite(LED_AZUL, LOW);
+  delay(1000);
+
+  // Encender color verde
+  digitalWrite(LED_ROJO, LOW);
+  digitalWrite(LED_VERDE, HIGH);
+  digitalWrite(LED_AZUL, LOW);
+  delay(1000);
+
+  // Encender color azul
+  digitalWrite(LED_ROJO, LOW);
+  digitalWrite(LED_VERDE, LOW);
+  digitalWrite(LED_AZUL, HIGH);
+  delay(1000);
+}
