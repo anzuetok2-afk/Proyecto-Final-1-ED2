@@ -2,7 +2,7 @@
 // Universidad del Valle de Guatemala
 // BE3029 - Electronica Digital 2
 // Proyecto 1 - Sistema de monitoreo cadena de frio
-// MCU: ESP32 DevKit
+// MCU: ESP32 dev kit 1.0
 //******************************************/
 
 //******************************************/
@@ -10,49 +10,41 @@
 //******************************************/
 #include <Arduino.h>
 #include <stdint.h>
-#include "driver/ledc.h"
-#include "config.h"
+#include "driver/ledc.h"                         // Permite controlar directamente el periferico LEDC del ESP32 usado para generar PWM
+#include "config.h"                              // Incluye la configuracion utilizada para la conexion con Adafruit IO
 
 //******************************************/
 // Definiciones
 //******************************************/
 
-// Sensor LM35 conectado a una entrada ADC del ESP32
+// LM35 y boton
 #define LM35_PIN 33
-
-// Boton utilizado para realizar una nueva inspeccion
 #define BOTON_PIN 26
 
-// Pines del LED RGB de catodo comun
+// LED RGB
 #define LED_ROJO 12
 #define LED_VERDE 14
 #define LED_AZUL 27
 
-// Canales PWM utilizados por el LED RGB
+// PWM RGB
 #define CANAL_ROJO 0
 #define CANAL_VERDE 1
 #define CANAL_AZUL 2
-
-// Configuracion PWM del LED RGB
 #define FRECUENCIA_RGB 5000
-#define RESOLUCION_RGB 8
+#define RESOLUCION_RGB 8                         // 8 bits permiten valores PWM entre 0 y 255
 
-// Pin y canal PWM utilizado por el servomotor
+// Servo
 #define SERVO_PIN 25
-#define CANAL_SERVO 3
+#define CANAL_SERVO 3                            // Se usa un canal distinto para no interferir con los canales del RGB
+#define FRECUENCIA_SERVO 50                      // 50 Hz corresponde a un periodo de 20 ms, comun para controlar servomotores
+#define RESOLUCION_SERVO 10                      // 10 bits permiten controlar el duty cycle con valores entre 0 y 1023
 
-// El servomotor utiliza una señal PWM de 50 Hz
-// con una resolucion de 10 bits
-#define FRECUENCIA_SERVO 50
-#define RESOLUCION_SERVO 10
+// Posiciones de la rejilla
+#define SERVO_CERRADO 77
+#define SERVO_MEDIO 90
+#define SERVO_ABIERTO 115                        // Estos valores son duty cycles para las posiciones fisicas de la rejilla
 
-// Valores PWM correspondientes a las tres
-// posiciones utilizadas por la rejilla
-#define SERVO_CERRADO 77   // Rejilla cerrada: 0 grados
-#define SERVO_MEDIO 90     // Rejilla media: aproximadamente 45 grados
-#define SERVO_ABIERTO 102  // Rejilla abierta: 90 grados
-
-// Pines compartidos por los tres displays de 7 segmentos
+// Display 7 segmentos
 #define SEG_A 21
 #define SEG_B 23
 #define SEG_C 4
@@ -62,8 +54,7 @@
 #define SEG_G 0
 #define SEG_DP 5
 
-// Pines que controlan los transistores utilizados
-// para seleccionar cada display durante el multiplexeo
+// Seleccion de displays
 #define DIGITO_1 2
 #define DIGITO_2 15
 #define DIGITO_3 13
@@ -71,73 +62,49 @@
 //******************************************/
 // Prototipos de funciones
 //******************************************/
-
-// Funciones para controlar el LED RGB
 void apagarRGB();
 void colorRojo();
 void colorVerde();
 void colorAzul();
 void colorAmarillo();
 
-// Funciones utilizadas por los displays
 void apagarSegmentos();
 void apagarDigitos();
 void mostrarNumero(int numero);
 
-// Funciones para controlar las posiciones del servo
 void servoCerrado();
 void servoMedio();
 void servoAbierto();
 
-// Funciones principales del sistema
 void leerTemperatura();
 void actualizarEstado();
 void enviarAdafruit();
 
-// Rutina de interrupcion utilizada para multiplexar
-// los tres displays de 7 segmentos
-void IRAM_ATTR multiplexeoTimer();
+void IRAM_ATTR multiplexeoTimer();                // IRAM_ATTR coloca la ISR en RAM para ejecutarla rapidamente 
 
 //******************************************/
 // Variables globales
 //******************************************/
-
-// Temperatura obtenida mediante el LM35
 float temperatura = 0.0;
-
-// Temperatura convertida a entero para separarla
-// en los tres digitos de los displays
 int tempDisplay = 0;
-
-// Variable utilizada para identificar el estado termico
 int estadoTemperatura = 0;
 
-// Estas variables son utilizadas tanto por el programa
-// principal como por la rutina de interrupcion.
-// Se declaran volatile porque pueden cambiar dentro de la ISR.
-volatile int decenas = 0;
+volatile int decenas = 0;                         // volatile evita que el compilador optimice variables que pueden cambiar dentro de una interrupcion
 volatile int unidades = 0;
 volatile int decimal = 0;
 volatile int digitoActual = 0;
 
-// Estado de la rejilla enviado a Adafruit IO
 String estadoRejilla = "Cerrado";
 
-// Timer utilizado para realizar el multiplexeo
-// independientemente del loop principal
-hw_timer_t *timerDisplay = NULL;
+// Timer del display
+hw_timer_t *timerDisplay = NULL;                  // Permite acceder y controlar el timer de hardware usado para el multiplexeo
+portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED; // protege las variables compartidas entre el programa principal y la interrupción del Timer, evitando que sean modificadas simultáneamente mientras se realiza el multiplexeo.
+// Feeds Adafruit IO
+AdafruitIO_Feed *canalTemperatura = io.feed("temperatura"); // Obtiene el feed donde se enviara el valor numerico de temperatura
+AdafruitIO_Feed *canalRejilla = io.feed("rejilla");         // Obtiene el feed donde se enviara el estado actual de la rejilla
 
-// Variable utilizada para proteger los datos compartidos
-// entre la ISR y el programa principal
-portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
-
-// Feeds utilizados para enviar informacion a Adafruit IO
-AdafruitIO_Feed *canalTemperatura = io.feed("temperatura");
-AdafruitIO_Feed *canalRejilla = io.feed("rejilla");
-
-// Tabla que indica cuales segmentos deben encenderse
-// para representar los numeros del 0 al 9
-const byte numeros[10][7] = {
+// Tabla para display de 7 segmentos
+const byte numeros[10][7] = {                    // Cada fila representa un numero y cada columna indica que segmento debe encenderse
   {1,1,1,1,1,1,0}, // 0
   {0,1,1,0,0,0,0}, // 1
   {1,1,0,1,1,0,1}, // 2
@@ -153,25 +120,15 @@ const byte numeros[10][7] = {
 //******************************************/
 // ISRs Rutinas de Interrupcion
 //******************************************/
-
-// Esta interrupcion se ejecuta periodicamente mediante
-// un Timer del ESP32.
-//
-// Su funcion es realizar el multiplexeo de los tres
-// displays sin depender de la velocidad del loop principal.
-// Esto permite mantener una visualizacion estable incluso
-// mientras el ESP32 se comunica con Adafruit IO.
 void IRAM_ATTR multiplexeoTimer() {
-  portENTER_CRITICAL_ISR(&timerMux);
-
-  // Primero se apagan los tres displays para evitar
-  // que aparezcan segmentos correspondientes a otro digito
+  portENTER_CRITICAL_ISR(&timerMux);              // Bloquea temporalmente otras interrupciones que puedan acceder a los mismos datos
+// Es porque mientras la ISR está haciendo el multiplexeo, queremos que esa parte crítica se ejecute de forma protegida.
+  // Apagar los tres displays
   digitalWrite(DIGITO_1, LOW);
   digitalWrite(DIGITO_2, LOW);
-  digitalWrite(DIGITO_3, LOW);
+  digitalWrite(DIGITO_3, LOW);                    // Se apagan antes de cambiar segmentos para evitar que aparezcan digitos mezclados
 
-  // Apagar todos los segmentos antes de mostrar
-  // el siguiente numero
+  // Apagar segmentos
   digitalWrite(SEG_A, LOW);
   digitalWrite(SEG_B, LOW);
   digitalWrite(SEG_C, LOW);
@@ -179,11 +136,11 @@ void IRAM_ATTR multiplexeoTimer() {
   digitalWrite(SEG_E, LOW);
   digitalWrite(SEG_F, LOW);
   digitalWrite(SEG_G, LOW);
-  digitalWrite(SEG_DP, LOW);
+  digitalWrite(SEG_DP, LOW);                      // Limpia el display antes de preparar el siguiente digito
 
-  // Primer display: muestra las decenas
+  // Display 1: decenas
   if (digitoActual == 0) {
-    digitalWrite(SEG_A, numeros[decenas][0]);
+    digitalWrite(SEG_A, numeros[decenas][0]);     // Usa el valor de decenas como indice para buscar su combinacion de segmentos
     digitalWrite(SEG_B, numeros[decenas][1]);
     digitalWrite(SEG_C, numeros[decenas][2]);
     digitalWrite(SEG_D, numeros[decenas][3]);
@@ -191,11 +148,10 @@ void IRAM_ATTR multiplexeoTimer() {
     digitalWrite(SEG_F, numeros[decenas][5]);
     digitalWrite(SEG_G, numeros[decenas][6]);
 
-    digitalWrite(DIGITO_1, HIGH);
+    digitalWrite(DIGITO_1, HIGH);                 // Activa solamente el display correspondiente a las decenas
   }
 
-  // Segundo display: muestra las unidades
-  // y tambien enciende el punto decimal
+  // Display 2: unidades + punto decimal
   else if (digitoActual == 1) {
     digitalWrite(SEG_A, numeros[unidades][0]);
     digitalWrite(SEG_B, numeros[unidades][1]);
@@ -205,11 +161,11 @@ void IRAM_ATTR multiplexeoTimer() {
     digitalWrite(SEG_F, numeros[unidades][5]);
     digitalWrite(SEG_G, numeros[unidades][6]);
 
-    digitalWrite(SEG_DP, HIGH);
+    digitalWrite(SEG_DP, HIGH);                   // Enciende el punto despues de las unidades para mostrar XX.X
     digitalWrite(DIGITO_2, HIGH);
   }
 
-  // Tercer display: muestra el primer decimal
+  // Display 3: decimal
   else {
     digitalWrite(SEG_A, numeros[decimal][0]);
     digitalWrite(SEG_B, numeros[decimal][1]);
@@ -219,65 +175,47 @@ void IRAM_ATTR multiplexeoTimer() {
     digitalWrite(SEG_F, numeros[decimal][5]);
     digitalWrite(SEG_G, numeros[decimal][6]);
 
-    digitalWrite(DIGITO_3, HIGH);
+    digitalWrite(DIGITO_3, HIGH);                 // Activa el tercer display con la cifra decimal
   }
 
-  // Avanzar al siguiente display
-  digitoActual++;
+  digitoActual++;                                 // Avanza al siguiente display en cada interrupcion
 
-  // Despues del tercer display se regresa al primero
   if (digitoActual > 2) {
-    digitoActual = 0;
+    digitoActual = 0;                             // Despues del tercer display vuelve al primero y repite continuamente
   }
 
-  portEXIT_CRITICAL_ISR(&timerMux);
+  portEXIT_CRITICAL_ISR(&timerMux);               // Libera la seccion critica al terminar la rutina de interrupcion
 }
 
 //******************************************/
 // Configuracion
 //******************************************/
 void setup() {
-  // Inicializar comunicacion serial
-  Serial.begin(115200);
+  Serial.begin(115200);                           // Inicializa la comunicacion serial a 115200 bits por segundo para monitorear el sistema
 
-  // El boton utiliza la resistencia pull-up interna.
-  // Por esta razon LOW significa boton presionado.
-  pinMode(BOTON_PIN, INPUT_PULLUP);
+  // Boton
+  pinMode(BOTON_PIN, INPUT_PULLUP);               // Activa la resistencia pull-up interna; sin presionar se lee HIGH y presionado se lee LOW
 
-  //******************************************/
-  // Configuracion PWM del LED RGB
-  //******************************************/
+  // PWM LED RGB
+  ledcSetup(CANAL_ROJO, FRECUENCIA_RGB, RESOLUCION_RGB); // Configura frecuencia y resolucion del PWM para este canal
+  ledcAttachPin(LED_ROJO, CANAL_ROJO);            // Conecta fisicamente el pin rojo con el canal PWM configurado
 
-  // Canal PWM para el color rojo
-  ledcSetup(CANAL_ROJO, FRECUENCIA_RGB, RESOLUCION_RGB);
-  ledcAttachPin(LED_ROJO, CANAL_ROJO);
-
-  // Canal PWM para el color verde
   ledcSetup(CANAL_VERDE, FRECUENCIA_RGB, RESOLUCION_RGB);
   ledcAttachPin(LED_VERDE, CANAL_VERDE);
 
-  // Canal PWM para el color azul
   ledcSetup(CANAL_AZUL, FRECUENCIA_RGB, RESOLUCION_RGB);
   ledcAttachPin(LED_AZUL, CANAL_AZUL);
 
-  // Iniciar con el LED RGB apagado
-  apagarRGB();
+  apagarRGB();                                    // Garantiza que el LED comience apagado antes de determinar un estado termico
 
-  //******************************************/
-  // Configuracion PWM del servomotor
-  //******************************************/
+  // PWM Servo
+  ledcSetup(CANAL_SERVO, FRECUENCIA_SERVO, RESOLUCION_SERVO); // Configura un PWM independiente apropiado para el servo
+  ledcAttachPin(SERVO_PIN, CANAL_SERVO);          // Envia la señal PWM del canal al pin conectado al servo
 
-  // El servo utiliza el cuarto canal PWM del proyecto
-  ledcSetup(CANAL_SERVO, FRECUENCIA_SERVO, RESOLUCION_SERVO);
-  ledcAttachPin(SERVO_PIN, CANAL_SERVO);
+  // Posicion inicial de la rejilla
+  servoCerrado();                                 // Coloca el sistema en una posicion conocida antes de comenzar las mediciones
 
-  // Al iniciar el sistema la rejilla comienza cerrada
-  servoCerrado();
-
-  //******************************************/
-  // Configuracion de los displays
-  //******************************************/
-
+  // Segmentos
   pinMode(SEG_A, OUTPUT);
   pinMode(SEG_B, OUTPUT);
   pinMode(SEG_C, OUTPUT);
@@ -287,50 +225,31 @@ void setup() {
   pinMode(SEG_G, OUTPUT);
   pinMode(SEG_DP, OUTPUT);
 
-  // Pines utilizados para seleccionar cada display
+  // Seleccion de displays
   pinMode(DIGITO_1, OUTPUT);
   pinMode(DIGITO_2, OUTPUT);
   pinMode(DIGITO_3, OUTPUT);
 
-  apagarSegmentos();
+  apagarSegmentos();                              // Evita estados indefinidos o segmentos encendidos durante el arranque
   apagarDigitos();
 
-  //******************************************/
-  // Configuracion del Timer
-  //******************************************/
+  // Timer para multiplexeo
+  timerDisplay = timerBegin(0, 80, true);         // Usa timer 0 con prescaler 80; desde 80 MHz produce un tick de aproximadamente 1 us
+  timerAttachInterrupt(timerDisplay, &multiplexeoTimer, true); // Ejecuta multiplexeoTimer automaticamente cuando ocurre la alarma
+  timerAlarmWrite(timerDisplay, 2000, true);      // Dispara la interrupcion cada 2000 ticks (~2 ms) y activa autorecarga
+  timerAlarmEnable(timerDisplay);                 // Inicia las interrupciones periodicas que mantienen funcionando el display
 
-  // Se configura un Timer del ESP32 para realizar
-  // el multiplexeo de forma periodica.
-  timerDisplay = timerBegin(0, 80, true);
-
-  // Asociar la interrupcion del Timer con la funcion
-  // encargada del multiplexeo
-  timerAttachInterrupt(timerDisplay, &multiplexeoTimer, true);
-
-  // Generar una interrupcion cada 2000 microsegundos (2 ms)
-  timerAlarmWrite(timerDisplay, 2000, true);
-
-  // Activar el Timer
-  timerAlarmEnable(timerDisplay);
-
-  //******************************************/
   // Conexion con Adafruit IO
-  //******************************************/
-
   Serial.print("Conectando a Adafruit IO");
+  io.connect();                                   // Inicia el proceso de conexion con Adafruit IO usando la configuracion de config.h
 
-  // Iniciar conexion utilizando las credenciales
-  // almacenadas en config.h
-  io.connect();
-
-  // Esperar hasta establecer conexion con Adafruit IO
-  while (io.status() < AIO_CONNECTED) {
+  while (io.status() < AIO_CONNECTED) {           // Mantiene el programa aqui hasta confirmar que la conexion se completo
     Serial.print(".");
     delay(500);
   }
 
   Serial.println();
-  Serial.println(io.statusText());
+  Serial.println(io.statusText());                // Muestra en Serial el estado reportado por Adafruit IO
 
   Serial.println("Sistema iniciado");
   Serial.println("Presiona el boton para medir");
@@ -340,31 +259,22 @@ void setup() {
 // Loop Principal
 //******************************************/
 void loop() {
-  // Mantener activa la comunicacion con Adafruit IO
-  io.run();
+  // Mantener conexion con Adafruit IO
+  io.run();                                       // Atiende continuamente la comunicacion de red necesaria para mantener Adafruit IO conectado
 
-  // Como se utiliza INPUT_PULLUP, el boton presionado
-  // genera un nivel logico LOW
-  if (digitalRead(BOTON_PIN) == LOW) {
+  // INPUT_PULLUP: LOW = boton presionado
+  if (digitalRead(BOTON_PIN) == LOW) {            // Detecta la pulsacion porque con INPUT_PULLUP el boton invierte la logica normal
+    leerTemperatura();                            // Realiza la medicion y prepara sus cifras para mostrarlas
+    actualizarEstado();                           // Decide LED y posicion de rejilla segun el rango de temperatura
+    enviarAdafruit();                             // Publica los resultados obtenidos en los feeds correspondientes
 
-    // Realizar una nueva medicion del LM35
-    leerTemperatura();
-
-    // Determinar el estado termico y actualizar
-    // el LED RGB y la posicion de la rejilla
-    actualizarEstado();
-
-    // Enviar los nuevos resultados a Adafruit IO
-    enviarAdafruit();
-
-    // Esperar hasta que el usuario suelte el boton.
-    // io.run() se mantiene para conservar la conexion.
-    while (digitalRead(BOTON_PIN) == LOW) {
-      io.run();
+    // Esperar a que se suelte el boton
+    while (digitalRead(BOTON_PIN) == LOW) {       // Impide realizar multiples mediciones mientras se mantiene presionado el mismo boton
+      io.run();                                   // Mantiene activa la conexion incluso mientras el programa espera que se suelte el boton
     }
 
-    // Pequeño tiempo de antirrebote
-    delay(50);
+    // Antirrebote
+    delay(50);                              
   }
 }
 
@@ -375,63 +285,51 @@ void loop() {
 //******************************************/
 // Funciones LED RGB
 //******************************************/
-
-// Apagar completamente los tres canales del LED RGB
 void apagarRGB() {
   ledcWrite(CANAL_ROJO, 0);
   ledcWrite(CANAL_VERDE, 0);
-  ledcWrite(CANAL_AZUL, 0);
+  ledcWrite(CANAL_AZUL, 0);                       // Duty cycle 0 elimina la salida PWM de los tres colores
 }
 
-// Encender solamente el color rojo
 void colorRojo() {
-  apagarRGB();
-  ledcWrite(CANAL_ROJO, 255);
+  apagarRGB();                                    // Borra el color anterior para evitar mezclas no deseadas
+  ledcWrite(CANAL_ROJO, 255);                     // Con resolucion de 8 bits, 255 corresponde al duty cycle maximo
 }
 
-// Encender solamente el color verde
 void colorVerde() {
   apagarRGB();
   ledcWrite(CANAL_VERDE, 255);
 }
 
-// Encender solamente el color azul
 void colorAzul() {
   apagarRGB();
   ledcWrite(CANAL_AZUL, 255);
 }
 
-// El amarillo se obtiene combinando rojo y verde
 void colorAmarillo() {
   apagarRGB();
   ledcWrite(CANAL_ROJO, 255);
-  ledcWrite(CANAL_VERDE, 255);
+  ledcWrite(CANAL_VERDE, 255);                    // La combinacion simultanea de rojo y verde produce amarillo en el LED RGB
 }
 
 //******************************************/
 // Funciones Servo
 //******************************************/
-
-// Posicionar la rejilla en 0 grados
 void servoCerrado() {
-  ledcWrite(CANAL_SERVO, SERVO_CERRADO);
+  ledcWrite(CANAL_SERVO, SERVO_CERRADO);          // Aplica el duty cycle previamente calibrado para colocar la rejilla cerrada
 }
 
-// Posicionar la rejilla aproximadamente en 45 grados
 void servoMedio() {
-  ledcWrite(CANAL_SERVO, SERVO_MEDIO);
+  ledcWrite(CANAL_SERVO, SERVO_MEDIO);            // Cambia el ancho de pulso para llevar el servo a la posicion intermedia
 }
 
-// Posicionar la rejilla en 90 grados
 void servoAbierto() {
-  ledcWrite(CANAL_SERVO, SERVO_ABIERTO);
+  ledcWrite(CANAL_SERVO, SERVO_ABIERTO);          // Aplica el valor PWM correspondiente a la posicion abierta
 }
 
 //******************************************/
 // Funciones Display
 //******************************************/
-
-// Apagar todos los segmentos
 void apagarSegmentos() {
   digitalWrite(SEG_A, LOW);
   digitalWrite(SEG_B, LOW);
@@ -440,22 +338,19 @@ void apagarSegmentos() {
   digitalWrite(SEG_E, LOW);
   digitalWrite(SEG_F, LOW);
   digitalWrite(SEG_G, LOW);
-  digitalWrite(SEG_DP, LOW);
+  digitalWrite(SEG_DP, LOW);                      // Deja todas las lineas de segmentos en estado apagado
 }
 
-// Desactivar los tres displays
 void apagarDigitos() {
   digitalWrite(DIGITO_1, LOW);
   digitalWrite(DIGITO_2, LOW);
-  digitalWrite(DIGITO_3, LOW);
+  digitalWrite(DIGITO_3, LOW);                    // Deshabilita los tres displays para poder modificar segmentos sin mostrar transiciones
 }
 
-// Mostrar un numero del 0 al 9 en las lineas
-// compartidas de los displays
 void mostrarNumero(int numero) {
-  apagarSegmentos();
+  apagarSegmentos();                              // Limpia el patron anterior antes de escribir uno nuevo
 
-  digitalWrite(SEG_A, numeros[numero][0]);
+  digitalWrite(SEG_A, numeros[numero][0]);        // numero selecciona la fila y el segundo indice selecciona el segmento A-G
   digitalWrite(SEG_B, numeros[numero][1]);
   digitalWrite(SEG_C, numeros[numero][2]);
   digitalWrite(SEG_D, numeros[numero][3]);
@@ -468,83 +363,56 @@ void mostrarNumero(int numero) {
 // Lectura del LM35
 //******************************************/
 void leerTemperatura() {
+  // Apagar RGB antes de leer el ADC
+  apagarRGB();                                    // Reduce actividad de las salidas mientras se realiza la medicion analogica
 
-  // Durante las pruebas se determino que las cargas
-  // digitales podian alterar la lectura del ADC.
-  // Por esta razon el RGB se apaga antes de medir.
-  apagarRGB();
-
-  // Pausar temporalmente el multiplexeo para evitar
-  // interferencias durante la lectura analogica
-  timerAlarmDisable(timerDisplay);
+  // Pausar multiplexeo durante la lectura
+  timerAlarmDisable(timerDisplay);                // Detiene temporalmente las interrupciones del display durante la adquisicion del ADC
 
   apagarDigitos();
-  apagarSegmentos();
+  apagarSegmentos();                              // Evita que el multiplexeo del display permanezca activo durante la lectura
 
-  // Esperar a que la señal del LM35 se estabilice
-  delay(100);
+  // Esperar estabilizacion
+  delay(100);                                     // Da tiempo a que las señales se estabilicen antes de tomar la muestra
 
-  // Primera lectura utilizada como descarte
-  // para estabilizar el ADC
-  analogReadMilliVolts(LM35_PIN);
+  // Primera lectura de descarte
+  analogReadMilliVolts(LM35_PIN);                 // Realiza una primera conversion que no se utiliza para descartar una lectura inicial inestable
   delay(10);
 
-  // Obtener directamente el voltaje del LM35
-  // expresado en milivoltios
-  uint32_t milivoltios = analogReadMilliVolts(LM35_PIN);
+  // Lectura real del LM35
+  uint32_t milivoltios = analogReadMilliVolts(LM35_PIN); // Obtiene directamente el resultado calibrado del ADC expresado en milivoltios
+  temperatura = (milivoltios / 10.0);          // Convierte el voltaje a temperatura usando la relacion aplicada en este proyecto
 
-  // El LM35 entrega aproximadamente 10 mV
-  // por cada grado Celsius
-  temperatura = milivoltios / 10.0;
+  // Preparar temperatura para display
+  // Ejemplo: 25.4 -> 254
+  tempDisplay = (int)(temperatura * 10.0 + 0.5);  // Multiplica por 10 y redondea para trabajar la temperatura como tres cifras enteras
 
-  // Convertir la temperatura a un entero para poder
-  // separarla entre los tres displays.
-  //
-  // Ejemplo:
-  // 25.4 C -> 254
-  tempDisplay = (int)(temperatura * 10.0 + 0.5);
-
-  // Los tres displays permiten representar como
-  // maximo un valor de 99.9
+  // Limite maximo del display: 99.9
   if (tempDisplay > 999) {
-    tempDisplay = 999;
+    tempDisplay = 999;                            // Evita intentar mostrar un numero que exceda la capacidad de los tres displays
   }
 
-  // Proteger la actualizacion de las variables
-  // compartidas con la rutina de interrupcion
-  portENTER_CRITICAL(&timerMux);
+  // Actualizar los digitos
+  portENTER_CRITICAL(&timerMux);                  // Protege los valores mientras son modificados para que la ISR no los lea a medio actualizar
 
-  // Separar el valor en tres digitos.
-  //
-  // Ejemplo:
-  // 254 -> 2 | 5 | 4
-  //
-  // En los displays se observa 25.4
-  decenas = tempDisplay / 100;
-  unidades = (tempDisplay / 10) % 10;
-  decimal = tempDisplay % 10;
+  decenas = tempDisplay / 100;                    // Division entera extrae la cifra de decenas: 254 -> 2
+  unidades = (tempDisplay / 10) % 10;             // Divide y usa modulo para aislar la cifra central: 254 -> 5
+  decimal = tempDisplay % 10;                     // El residuo de dividir entre 10 obtiene la ultima cifra: 254 -> 4
+  digitoActual = 0;                               // Reinicia el multiplexeo desde el primer display despues de actualizar el numero
 
-  // Reiniciar el multiplexeo desde el primer display
-  digitoActual = 0;
+  portEXIT_CRITICAL(&timerMux);                   // Libera las variables una vez que todas quedaron actualizadas
 
-  portEXIT_CRITICAL(&timerMux);
+  // Reactivar multiplexeo
+  timerAlarmEnable(timerDisplay);                 // Vuelve a iniciar las interrupciones para mostrar la nueva temperatura
 
-  // Reactivar el Timer despues de terminar
-  // la lectura del LM35
-  timerAlarmEnable(timerDisplay);
-
-  //******************************************/
-  // Mostrar resultados en el monitor serial
-  //******************************************/
-
+  // Monitor Serial
   Serial.println("----------------");
-
   Serial.print("Voltaje: ");
   Serial.print(milivoltios);
   Serial.println(" mV");
 
   Serial.print("Temperatura: ");
-  Serial.print(temperatura, 1);
+  Serial.print(temperatura, 1);                   // El segundo argumento hace que se imprima solamente una cifra despues del punto decimal
   Serial.println(" C");
 
   Serial.print("Display: ");
@@ -559,50 +427,41 @@ void leerTemperatura() {
 //******************************************/
 void actualizarEstado() {
 
-  //******************************************/
-  // Riesgo por frio
-  // T < 23 C
-  // Azul + rejilla cerrada
-  //******************************************/
-  if (temperatura < 23.0) {
+  // Menor a 23 C
+  // Azul + rejilla cerrada 0 grados
+  if (temperatura < 23.0) {                       // Primer umbral: identifica temperaturas por debajo del rango considerado seguro
     estadoTemperatura = 0;
     estadoRejilla = "Cerrado";
 
-    colorAzul();
-    servoCerrado();
+    colorAzul();                                  // Proporciona una indicacion visual de riesgo por temperatura baja
+    servoCerrado();                               // Mantiene cerrada la rejilla para el estado de frio
 
     Serial.println("RIESGO POR FRIO");
     Serial.println("LED: AZUL");
     Serial.println("REJILLA: CERRADO - 0 grados");
   }
 
-  //******************************************/
-  // Rango seguro
-  // 23 C <= T < 25 C
-  // Verde + rejilla media
-  //******************************************/
-  else if (temperatura < 25.0) {
+  // 23 C a 25 C
+  // Verde + rejilla media 45 grados
+  else if (temperatura < 25.0) {                  // Solo necesita comprobar <25 porque el if anterior ya descarto valores menores a 23
     estadoTemperatura = 1;
     estadoRejilla = "Medio";
 
-    colorVerde();
-    servoMedio();
+    colorVerde();                                 // Verde representa que la medicion se encuentra dentro del rango seguro
+    servoMedio();                                 // Coloca la rejilla en la posicion intermedia definida para este rango
 
     Serial.println("RANGO SEGURO");
     Serial.println("LED: VERDE");
     Serial.println("REJILLA: MEDIO - 45 grados");
   }
 
-  //******************************************/
-  // Cerca del limite
-  // 25 C <= T < 27 C
-  // Amarillo + rejilla media
-  //******************************************/
-  else if (temperatura < 27.0) {
+  // 25 C a 27 C
+  // Amarillo + rejilla media 45 grados
+  else if (temperatura < 27.0) {                  // Al llegar aqui la temperatura ya es >=25, por eso esta condicion representa 25 a <27
     estadoTemperatura = 2;
     estadoRejilla = "Medio";
 
-    colorAmarillo();
+    colorAmarillo();                              // Amarillo advierte que la temperatura esta acercandose al limite superior
     servoMedio();
 
     Serial.println("CERCA DEL LIMITE");
@@ -610,17 +469,14 @@ void actualizarEstado() {
     Serial.println("REJILLA: MEDIO - 45 grados");
   }
 
-  //******************************************/
-  // Riesgo por calor
-  // T >= 27 C
-  // Rojo + rejilla abierta
-  //******************************************/
-  else {
+  // Mayor a 27 C
+  // Rojo + rejilla abierta 90 grados
+  else {                                          // Se ejecuta cuando ninguna condicion anterior se cumple, es decir, temperatura >=27
     estadoTemperatura = 3;
     estadoRejilla = "Abierto";
 
-    colorRojo();
-    servoAbierto();
+    colorRojo();                                  // Rojo indica la condicion de riesgo por temperatura elevada
+    servoAbierto();                               // Abre la rejilla completamente como respuesta al estado de calor
 
     Serial.println("RIESGO POR CALOR");
     Serial.println("LED: ROJO");
@@ -632,14 +488,8 @@ void actualizarEstado() {
 // Envio a Adafruit IO
 //******************************************/
 void enviarAdafruit() {
-
-  // Enviar la temperatura obtenida por el LM35
-  // al feed "temperatura"
-  canalTemperatura->save(temperatura);
-
-  // Enviar el estado actual de la rejilla
-  // al feed "rejilla"
-  canalRejilla->save(estadoRejilla);
+  canalTemperatura->save(temperatura);            // Publica el valor actual de temperatura en el feed "temperatura"
+  canalRejilla->save(estadoRejilla);              // Publica como texto la posicion actual de la rejilla en su feed
 
   Serial.println("Datos enviados a Adafruit IO");
 }
